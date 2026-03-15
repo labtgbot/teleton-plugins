@@ -527,7 +527,7 @@ const stonfiSwapQuote = {
     try {
       const slippage = params.slippage ?? 0.01;
       const inputAmount = Number(params.amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("amount must be a positive number");
       }
 
@@ -632,7 +632,7 @@ const stonfiSwap = {
 
       const slippage = params.slippage ?? 0.01;
       const inputAmount = Number(params.amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("amount must be a positive number");
       }
 

@@ -732,7 +732,7 @@ const dedustSwapEstimate = {
       const { Factory, PoolType, Asset } = sdk;
 
       const inputAmount = Number(params.input_amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("input_amount must be a positive number");
       }
 
@@ -868,7 +868,7 @@ const dedustSwap = {
 
       const slippage = params.slippage ?? 0.05;
       const inputAmount = Number(params.input_amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("input_amount must be a positive number");
       }
 

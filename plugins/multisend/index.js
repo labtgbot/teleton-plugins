@@ -432,7 +432,11 @@ const multisendBatchJetton = {
 
       // Build jetton transfer messages
       const messages = recipients.map((r, i) => {
-        const jettonAmount = BigInt(Math.round(Number(r.amount) * 10 ** decimals));
+        const parsedAmount = Number(r.amount);
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+          throw new Error(`Invalid amount for recipient #${i + 1} (${r.address}): ${r.amount}`);
+        }
+        const jettonAmount = BigInt(Math.round(parsedAmount * 10 ** decimals));
         const body = beginCell()
           .storeUint(0xf8a7ea5, 32) // op: jetton transfer
           .storeUint(i, 64) // query_id

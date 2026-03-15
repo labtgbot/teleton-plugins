@@ -131,7 +131,7 @@ const swapQuote = {
     try {
       const maxSplits = params.max_splits ?? 4;
       const inputAmount = Number(params.input_amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("input_amount must be a positive number");
       }
 
@@ -236,7 +236,7 @@ const swapExecute = {
       const slippage = params.slippage ?? 0.05;
       const maxSplits = params.max_splits ?? 4;
       const inputAmount = Number(params.input_amount);
-      if (isNaN(inputAmount) || inputAmount <= 0) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
         throw new Error("input_amount must be a positive number");
       }
 
