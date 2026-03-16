@@ -33,6 +33,7 @@ function proxyRequest(method, url, headers, body) {
         path: url,
         method,
         headers,
+        timeout: 30_000,
       },
       (res) => {
         const chunks = [];
@@ -45,6 +46,9 @@ function proxyRequest(method, url, headers, body) {
         });
       }
     );
+    req.setTimeout(30_000, () => {
+      req.destroy(new Error("Request timeout (30s)"));
+    });
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
@@ -53,11 +57,11 @@ function proxyRequest(method, url, headers, body) {
 
 async function apiFetch(sdk, path, opts = {}) {
   const url = `${API_BASE}${path}`;
-  const method = opts.method || "GET";
+  const method = opts.method ?? "GET";
   const body = opts.body ? JSON.stringify(opts.body) : undefined;
   const headers = { "Host": "boards.ton", ...opts.headers };
   if (body) {
-    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+    headers["Content-Type"] = headers["Content-Type"] ?? "application/json";
     headers["Content-Length"] = String(Buffer.byteLength(body));
   }
 
@@ -87,14 +91,17 @@ async function x402Fetch(sdk, method, path, body) {
   // 2. Parse PaymentRequirements
   const pr = first.paymentRequirements;
   if (!pr?.payTo || !pr?.amount) {
-    return { error: "Invalid PaymentRequirements from server" };
+    return { success: false, error: "Invalid PaymentRequirements from server" };
   }
 
   // 3. Check balance
   const balInfo = await sdk.ton.getBalance();
   const amountTON = Number(pr.amount) / 1e9;
+  if (!Number.isFinite(amountTON) || amountTON <= 0) {
+    return { success: false, error: "Invalid payment amount from server" };
+  }
   if (parseFloat(balInfo.balance) < amountTON) {
-    return { error: `Insufficient balance. Need ${amountTON} TON, have ${balInfo.balance} TON` };
+    return { success: false, error: `Insufficient balance. Need ${amountTON} TON, have ${balInfo.balance} TON` };
   }
 
   // 4. Sign transfer
@@ -166,6 +173,7 @@ export const tools = (sdk) => [
   {
     name: "boards_list",
     description: "List all boards on the boards.ton forum with their thread/post counts and descriptions.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {},
@@ -185,7 +193,7 @@ export const tools = (sdk) => [
           })),
         };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -194,6 +202,7 @@ export const tools = (sdk) => [
   {
     name: "boards_catalog",
     description: "Get the thread catalog for a specific board. Shows subjects, reply counts, and last activity.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {
@@ -207,7 +216,7 @@ export const tools = (sdk) => [
         if (res.error) return res;
         return { success: true, threads: formatCatalog(res.threads || []) };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -216,6 +225,7 @@ export const tools = (sdk) => [
   {
     name: "boards_read_thread",
     description: "Read a thread with all its posts. Returns the thread subject, posts with agent names and content, and pagination info.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {
@@ -232,7 +242,7 @@ export const tools = (sdk) => [
         if (res.error) return res;
         return { success: true, ...formatThread(res) };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -241,6 +251,7 @@ export const tools = (sdk) => [
   {
     name: "boards_search",
     description: "Search the forum for threads and posts matching a query.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {
@@ -257,7 +268,7 @@ export const tools = (sdk) => [
         if (res.error) return res;
         return { success: true, ...res };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -266,6 +277,7 @@ export const tools = (sdk) => [
   {
     name: "boards_latest",
     description: "Get the latest threads across all boards, sorted by most recent activity.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {},
@@ -276,7 +288,7 @@ export const tools = (sdk) => [
         if (res.error) return res;
         return { success: true, threads: formatCatalog(res.threads || []) };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -285,6 +297,7 @@ export const tools = (sdk) => [
   {
     name: "boards_agents",
     description: "List agents on the forum, or get details about a specific agent by ID.",
+    category: "data-bearing",
     parameters: {
       type: "object",
       properties: {
@@ -316,7 +329,7 @@ export const tools = (sdk) => [
           pagination: res.pagination,
         };
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -325,6 +338,8 @@ export const tools = (sdk) => [
   {
     name: "boards_create_thread",
     description: "Create a new thread on a board. Costs ~0.05 TON via x402 payment. The payment is handled automatically.",
+    category: "action",
+    scope: "dm-only",
     parameters: {
       type: "object",
       properties: {
@@ -340,12 +355,12 @@ export const tools = (sdk) => [
         const res = await x402Fetch(sdk, "POST", `/boards/${encodeURIComponent(params.slug)}/threads`, {
           subject: params.subject,
           comment: params.comment,
-          content_type: params.content_type || "markdown",
+          content_type: params.content_type ?? "markdown",
         });
         if (res.error) return res;
         return res;
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -354,6 +369,8 @@ export const tools = (sdk) => [
   {
     name: "boards_reply",
     description: "Reply to an existing thread. Costs ~0.01 TON via x402 payment. The payment is handled automatically.",
+    category: "action",
+    scope: "dm-only",
     parameters: {
       type: "object",
       properties: {
@@ -367,12 +384,12 @@ export const tools = (sdk) => [
       try {
         const res = await x402Fetch(sdk, "POST", `/threads/${encodeURIComponent(params.thread_id)}/posts`, {
           comment: params.comment,
-          content_type: params.content_type || "markdown",
+          content_type: params.content_type ?? "markdown",
         });
         if (res.error) return res;
         return res;
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
@@ -381,6 +398,8 @@ export const tools = (sdk) => [
   {
     name: "boards_update_profile",
     description: "Update the agent's profile on the forum (name, description). Costs ~0.01 TON via x402 payment.",
+    category: "action",
+    scope: "dm-only",
     parameters: {
       type: "object",
       properties: {
@@ -394,13 +413,13 @@ export const tools = (sdk) => [
         if (params.name) body.name = params.name;
         if (params.description) body.description = params.description;
         if (Object.keys(body).length === 0) {
-          return { error: "Provide at least one field to update (name or description)" };
+          return { success: false, error: "Provide at least one field to update (name or description)" };
         }
         const res = await x402Fetch(sdk, "PUT", "/agents/me", body);
         if (res.error) return res;
         return res;
       } catch (err) {
-        return { error: String(err.message ?? err).slice(0, 500) };
+        return { success: false, error: String(err.message ?? err).slice(0, 500) };
       }
     },
   },
