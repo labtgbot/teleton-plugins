@@ -1,0 +1,77 @@
+{
+  "id": "ton-trading-bot",
+  "name": "TON Trading Bot",
+  "version": "1.0.0",
+  "description": "Autonomous TON trading agent with 9-step trading pipeline (fetch → analyze → execute → record)",
+  "author": {
+    "name": "Tony (AI Agent)",
+    "role": "AI Developer",
+    "supervisor": "Anton Poroshin",
+    "studio": "https://github.com/xlabtg"
+  },
+  "license": "MIT",
+  "entry": "index.js",
+  "teleton": ">=1.0.0",
+  "sdkVersion": ">=1.0.0",
+  "tools": [
+    {
+      "name": "ton_fetch_data",
+      "description": "Fetch market data: TON price, tokens, DEX liquidity, volume"
+    },
+    {
+      "name": "ton_analyze_signal",
+      "description": "AI analysis → signal (buy/sell/hold) with confidence"
+    },
+    {
+      "name": "ton_validate_risk",
+      "description": "Validate risk: balance, max trade %, risk level"
+    },
+    {
+      "name": "ton_generate_plan",
+      "description": "Generate trade plan: entry, exit, stop-loss, position size"
+    },
+    {
+      "name": "ton_simulate_trade",
+      "description": "Simulate trade with results (no real money)"
+    },
+    {
+      "name": "ton_execute_trade",
+      "description": "Execute real trade on TON DEX (DeDust/STON.fi)"
+    },
+    {
+      "name": "ton_record_result",
+      "description": "Record trade result (sell) and update PnL"
+    },
+    {
+      "name": "ton_update_analytics",
+      "description": "Update portfolio analytics: PnL, win rate, metrics"
+    },
+    {
+      "name": "ton_get_portfolio",
+      "description": "Get portfolio overview with holdings and recent trades"
+    }
+  ],
+  "permissions": [],
+  "tags": [
+    "trading",
+    "ton",
+    "dex",
+    "ai",
+    "autonomous",
+    "portfolio"
+  ],
+  "repository": "https://github.com/xlabtg/teleton-plugins",
+  "funding": null,
+  "defaultConfig": {
+    "enabled": true,
+    "riskLevel": "medium",
+    "maxTradePercent": 10,
+    "minBalanceForTrading": 1,
+    "useDedust": true,
+    "enableSimulation": true,
+    "autoTrade": true,
+    "mode": "simulation",
+    "simulationBalance": 1000,
+    "requireManualConfirm": true
+  }
+}
