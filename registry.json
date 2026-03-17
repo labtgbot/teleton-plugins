@@ -192,6 +192,14 @@
       "author": "xlabtg",
       "tags": ["trading", "ton", "dex", "ai", "autonomous", "portfolio"],
       "path": "plugins/ton-trading-bot"
+    },
+	  {
+  "id": "ton-bridge",
+  "name": "TON Bridge",
+  "description": "Beautiful inline button plugin for TON Bridge Mini App access",
+  "author": "xlabtg",
+  "tags": ["ton", "bridge", "miniapp", "tool", "tonbridge"],
+  "path": "plugins/ton-bridge"
     }
   ]
 }
