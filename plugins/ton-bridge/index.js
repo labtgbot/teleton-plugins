@@ -4,8 +4,8 @@
  * Provides LLM-callable tools to share the TON Bridge Mini App link.
  * Pattern B (SDK) — uses sdk.pluginConfig, sdk.log, sdk.telegram.sendMessage
  *
- * Actively sends messages with URL inline buttons so the button renders
- * correctly in DMs, groups, and channels.
+ * Sends messages with the Mini App deep link embedded in the text.
+ * The link renders as a tappable URL in DMs, groups, and channels.
  */
 
 // ─── Manifest (inline) ────────────────────────────────────────────────────────
@@ -31,6 +31,17 @@ function buildUrl(startParam) {
   return startParam
     ? `${MINI_APP_URL}=${encodeURIComponent(startParam)}`
     : MINI_APP_URL;
+}
+
+/**
+ * Build the message text with the Mini App link appended.
+ * sdk.telegram.sendMessage inlineKeyboard only supports callback_data buttons;
+ * URL buttons cause Buffer.from(undefined) inside TelegramBridge. Instead we
+ * embed the link directly in the message text where Telegram renders it as a
+ * tappable deep link.
+ */
+function buildMessageWithLink(text, buttonText, url) {
+  return `${text}\n\n${buttonText}: ${url}`;
 }
 
 // ─── Tools ────────────────────────────────────────────────────────────────────
@@ -73,12 +84,11 @@ export const tools = (sdk) => [
           `ton_bridge_open called by ${context?.senderId ?? "unknown"}`
         );
 
+        const fullText = buildMessageWithLink(text, buttonText, url);
+
         const messageId = await sdk.telegram.sendMessage(
           context.chatId,
-          text,
-          {
-            inlineKeyboard: [[{ text: buttonText, url }]],
-          }
+          fullText
         );
 
         return {
@@ -123,12 +133,12 @@ export const tools = (sdk) => [
           `ton_bridge_about called by ${context?.senderId ?? "unknown"}`
         );
 
+        const aboutText = "About TON Bridge\n\nTON Bridge is the #1 bridge in the TON Catalog. Transfer assets across chains seamlessly via the official Mini App.";
+        const fullText = buildMessageWithLink(aboutText, buttonText, url);
+
         const messageId = await sdk.telegram.sendMessage(
           context.chatId,
-          "About TON Bridge\n\nTON Bridge is the #1 bridge in the TON Catalog. Transfer assets across chains seamlessly via the official Mini App.",
-          {
-            inlineKeyboard: [[{ text: buttonText, url }]],
-          }
+          fullText
         );
 
         return {
@@ -185,12 +195,11 @@ export const tools = (sdk) => [
           `ton_bridge_custom_message called by ${context?.senderId ?? "unknown"}`
         );
 
+        const fullText = buildMessageWithLink(customMessage, buttonText, url);
+
         const messageId = await sdk.telegram.sendMessage(
           context.chatId,
-          customMessage,
-          {
-            inlineKeyboard: [[{ text: buttonText, url }]],
-          }
+          fullText
         );
 
         return {
