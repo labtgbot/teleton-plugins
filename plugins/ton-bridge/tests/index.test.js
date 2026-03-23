@@ -135,7 +135,7 @@ describe("ton-bridge plugin", () => {
       assert.equal(result.data.chat_id, 111);
       assert.equal(capturedChatId, 111);
       assert.ok(capturedText, "message text should be provided");
-      assert.ok(capturedOpts.inlineKeyboard, "inline keyboard should be included");
+      assert.ok(capturedText.includes("TONBridge_robot"), "message text should include Mini App link");
     });
 
     it("uses custom message when provided", async () => {
@@ -150,41 +150,56 @@ describe("ton-bridge plugin", () => {
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({ message: "Custom text" }, makeContext());
-      assert.equal(capturedText, "Custom text");
+      assert.ok(capturedText.startsWith("Custom text"), "message should start with custom text");
     });
 
     it("uses custom buttonText when provided", async () => {
-      let capturedOpts;
+      let capturedText;
       const sdk = makeSdk({
         telegram: {
-          sendMessage: async (chatId, text, opts) => {
-            capturedOpts = opts;
+          sendMessage: async (chatId, text) => {
+            capturedText = text;
             return 1;
           },
         },
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({ buttonText: "Open Bridge" }, makeContext());
-      assert.equal(capturedOpts.inlineKeyboard[0][0].text, "Open Bridge");
+      assert.ok(capturedText.includes("Open Bridge"), "message should include custom button text");
     });
 
     it("falls back to sdk.pluginConfig.buttonText when no buttonText param", async () => {
-      let capturedOpts;
+      let capturedText;
       const sdk = makeSdk({
         pluginConfig: { buttonText: "My Bridge Button", startParam: "" },
         telegram: {
-          sendMessage: async (chatId, text, opts) => {
-            capturedOpts = opts;
+          sendMessage: async (chatId, text) => {
+            capturedText = text;
             return 1;
           },
         },
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({}, makeContext());
-      assert.equal(capturedOpts.inlineKeyboard[0][0].text, "My Bridge Button");
+      assert.ok(capturedText.includes("My Bridge Button"), "message should include config button text");
     });
 
-    it("button URL points to TON Bridge", async () => {
+    it("message text includes TON Bridge URL", async () => {
+      let capturedText;
+      const sdk = makeSdk({
+        telegram: {
+          sendMessage: async (chatId, text) => {
+            capturedText = text;
+            return 1;
+          },
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
+      await tool.execute({}, makeContext());
+      assert.ok(capturedText.includes("TONBridge_robot"), `message should include TONBridge_robot URL, got: ${capturedText}`);
+    });
+
+    it("does not pass inlineKeyboard option to sendMessage", async () => {
       let capturedOpts;
       const sdk = makeSdk({
         telegram: {
@@ -196,8 +211,7 @@ describe("ton-bridge plugin", () => {
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({}, makeContext());
-      const url = capturedOpts.inlineKeyboard[0][0].url;
-      assert.ok(url.includes("TONBridge_robot"), `URL should reference TONBridge_robot, got: ${url}`);
+      assert.equal(capturedOpts, undefined, "should not pass options with inlineKeyboard");
     });
 
     it("returns failure when sendMessage throws", async () => {
@@ -262,7 +276,8 @@ describe("ton-bridge plugin", () => {
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_custom_message");
       await tool.execute({ customMessage: "Hello TON!" }, makeContext());
-      assert.equal(capturedText, "Hello TON!");
+      assert.ok(capturedText.startsWith("Hello TON!"), "message should start with custom message");
+      assert.ok(capturedText.includes("TONBridge_robot"), "message should include Mini App link");
     });
 
     it("returns success with message_id and chat_id", async () => {
@@ -305,7 +320,7 @@ describe("ton-bridge plugin", () => {
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_custom_message");
       await tool.execute({}, makeContext());
-      assert.equal(capturedText, "Config fallback message");
+      assert.ok(capturedText.startsWith("Config fallback message"), "message should start with config fallback");
     });
 
     it("falls back to default message when both customMessage param and pluginConfig.customMessage are missing", async () => {
@@ -328,38 +343,37 @@ describe("ton-bridge plugin", () => {
 
   describe("startParam URL building", () => {
     it("appends startParam to URL when set", async () => {
-      let capturedOpts;
+      let capturedText;
       const sdk = makeSdk({
         pluginConfig: { buttonText: "Bridge", startParam: "myref" },
         telegram: {
-          sendMessage: async (chatId, text, opts) => {
-            capturedOpts = opts;
+          sendMessage: async (chatId, text) => {
+            capturedText = text;
             return 1;
           },
         },
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({}, makeContext());
-      const url = capturedOpts.inlineKeyboard[0][0].url;
-      assert.ok(url.includes("myref"), `URL should include startParam, got: ${url}`);
+      assert.ok(capturedText.includes("myref"), `message should include startParam, got: ${capturedText}`);
     });
 
     it("does not append startParam when empty", async () => {
-      let capturedOpts;
+      let capturedText;
       const sdk = makeSdk({
         pluginConfig: { buttonText: "Bridge", startParam: "" },
         telegram: {
-          sendMessage: async (chatId, text, opts) => {
-            capturedOpts = opts;
+          sendMessage: async (chatId, text) => {
+            capturedText = text;
             return 1;
           },
         },
       });
       const tool = mod.tools(sdk).find((t) => t.name === "ton_bridge_open");
       await tool.execute({}, makeContext());
-      const url = capturedOpts.inlineKeyboard[0][0].url;
-      // URL should be the base URL without extra params appended via =
-      assert.ok(url.endsWith("startapp"), `URL without startParam should end with 'startapp', got: ${url}`);
+      // URL in message should be the base URL without extra params appended via =
+      assert.ok(capturedText.includes("startapp"), `message should include base URL ending with 'startapp'`);
+      assert.ok(!capturedText.includes("startapp="), `message URL should not have startParam appended, got: ${capturedText}`);
     });
   });
 });
