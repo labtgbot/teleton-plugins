@@ -88,7 +88,7 @@ export function createGitHubClient(sdk) {
       signal: AbortSignal.timeout(20000),
     };
 
-    if (body !== null && ["POST", "PUT", "PATCH"].includes(opts.method)) {
+    if (body !== null && ["POST", "PUT", "PATCH", "DELETE"].includes(opts.method)) {
       opts.body = JSON.stringify(body);
     }
 
@@ -194,10 +194,11 @@ export function createGitHubClient(sdk) {
     /**
      * DELETE request.
      * @param {string} path
+     * @param {object|null} [body] - Optional JSON body (required by some GitHub endpoints, e.g. delete file)
      * @returns {Promise<any>}
      */
-    async delete(path) {
-      const { data } = await request("DELETE", path);
+    async delete(path, body = null) {
+      const { data } = await request("DELETE", path, body);
       return data;
     },
 

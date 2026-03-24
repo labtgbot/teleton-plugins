@@ -1,13 +1,22 @@
 /**
  * github-dev-assistant — Full GitHub Development Workflow Automation
  *
- * Provides 14 tools for autonomous GitHub operations:
- *   Auth (1):      github_check_auth
- *   Repos (2):     github_list_repos, github_create_repo
- *   Files (3):     github_get_file, github_update_file, github_create_branch
- *   PRs (3):       github_create_pr, github_list_prs, github_merge_pr
- *   Issues (4):    github_create_issue, github_list_issues, github_comment_issue, github_close_issue
- *   Actions (1):   github_trigger_workflow
+ * Provides 37 tools covering:
+ *   Auth (1):          github_check_auth
+ *   Repos (2):         github_list_repos, github_create_repo
+ *   Files (7):         github_get_file, github_update_file, github_create_branch,
+ *                      github_delete_file, github_list_directory, github_search_code,
+ *                      github_download_file
+ *   PRs (5):           github_create_pr, github_list_prs, github_merge_pr,
+ *                      github_list_comments, github_list_pull_request_reviews
+ *   Issues (8):        github_create_issue, github_list_issues, github_comment_issue,
+ *                      github_close_issue, github_update_issue, github_reopen_issue,
+ *                      github_assign_issue
+ *   Commits (2):       github_list_commits, github_get_commit
+ *   Actions (4):       github_trigger_workflow, github_list_workflows,
+ *                      github_list_workflow_runs, github_cancel_workflow_run
+ *   Labels (3):        github_list_labels, github_create_label, github_delete_label
+ *   Repo Info (3):     github_list_languages, github_list_collaborators, github_list_teams
  *
  * Authentication:
  *   - Uses a Personal Access Token (PAT) stored in sdk.secrets as "github_token"
@@ -27,6 +36,12 @@
 import { buildRepoOpsTools } from "./lib/repo-ops.js";
 import { buildPRManagerTools } from "./lib/pr-manager.js";
 import { buildIssueTrackerTools } from "./lib/issue-tracker.js";
+import { buildFileOpsTools } from "./lib/file-ops.js";
+import { buildCommitOpsTools } from "./lib/commit-ops.js";
+import { buildIssuePROpsTools } from "./lib/issue-pr-ops.js";
+import { buildRepoInfoOpsTools } from "./lib/repo-info-ops.js";
+import { buildWorkflowOpsTools } from "./lib/workflow-ops.js";
+import { buildLabelOpsTools } from "./lib/label-ops.js";
 import { createGitHubClient } from "./lib/github-client.js";
 import { formatError } from "./lib/utils.js";
 
@@ -37,10 +52,10 @@ import { formatError } from "./lib/utils.js";
 
 export const manifest = {
   name: "github-dev-assistant",
-  version: "1.0.0",
+  version: "2.0.0",
   sdkVersion: ">=1.0.0",
   description:
-    "Full GitHub development workflow automation — repos, files, branches, PRs, issues, and GitHub Actions via Personal Access Token",
+    "Full GitHub development workflow automation — repos, files, branches, PRs, issues, commits, Actions workflows, labels, and repository info via Personal Access Token",
   secrets: {
     github_token: {
       required: true,
@@ -138,12 +153,49 @@ export const tools = (sdk) => {
   const issueTools = buildIssueTrackerTools(sdk);
 
   // ---------------------------------------------------------------------------
-  // Combine and return all 14 tools
+  // Extended file operations (4): delete, list directory, search code, download
+  // ---------------------------------------------------------------------------
+  const fileOpsTools = buildFileOpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Commit operations (2): list commits, get commit
+  // ---------------------------------------------------------------------------
+  const commitOpsTools = buildCommitOpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Extended issue/PR operations (5): list comments, update issue, reopen issue,
+  // assign issue, list PR reviews
+  // ---------------------------------------------------------------------------
+  const issuePROpsTools = buildIssuePROpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Repository information tools (3): languages, collaborators, teams
+  // ---------------------------------------------------------------------------
+  const repoInfoOpsTools = buildRepoInfoOpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Extended workflow operations (3): list workflows, list runs, cancel run
+  // ---------------------------------------------------------------------------
+  const workflowOpsTools = buildWorkflowOpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Label operations (3): list labels, create label, delete label
+  // ---------------------------------------------------------------------------
+  const labelOpsTools = buildLabelOpsTools(sdk);
+
+  // ---------------------------------------------------------------------------
+  // Combine and return all tools
   // ---------------------------------------------------------------------------
   return [
-    ...authTools,   // 1: github_check_auth
-    ...repoTools,   // 5: github_list_repos, github_create_repo, github_get_file, github_update_file, github_create_branch
-    ...prTools,     // 3: github_create_pr, github_list_prs, github_merge_pr
-    ...issueTools,  // 5: github_create_issue, github_list_issues, github_comment_issue, github_close_issue, github_trigger_workflow
+    ...authTools,       // 1: github_check_auth
+    ...repoTools,       // 5: github_list_repos, github_create_repo, github_get_file, github_update_file, github_create_branch
+    ...prTools,         // 3: github_create_pr, github_list_prs, github_merge_pr
+    ...issueTools,      // 5: github_create_issue, github_list_issues, github_comment_issue, github_close_issue, github_trigger_workflow
+    ...fileOpsTools,    // 4: github_delete_file, github_list_directory, github_search_code, github_download_file
+    ...commitOpsTools,  // 2: github_list_commits, github_get_commit
+    ...issuePROpsTools, // 5: github_list_comments, github_update_issue, github_reopen_issue, github_assign_issue, github_list_pull_request_reviews
+    ...repoInfoOpsTools,// 3: github_list_languages, github_list_collaborators, github_list_teams
+    ...workflowOpsTools,// 3: github_list_workflows, github_list_workflow_runs, github_cancel_workflow_run
+    ...labelOpsTools,   // 3: github_list_labels, github_create_label, github_delete_label
   ];
 };
