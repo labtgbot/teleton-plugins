@@ -17,14 +17,14 @@
 
 export const manifest = {
   name: "memory",
-  version: "1.1.0",
+  version: "1.2.0",
   sdkVersion: ">=1.0.0",
   description: "Persistent memory with tag-based and entity-based advanced filtering",
 };
 
 // ─── Database Migration ────────────────────────────────────────────────────────
 
-export function migrate(db) {
+export function migrate(db, config = {}) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_entries (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +69,25 @@ export function migrate(db) {
     db.exec(`INSERT OR IGNORE INTO memory_schema_version (version) VALUES (2)`);
   } catch {
     // Column already exists — no-op
+  }
+
+  // v3: optional associative/link-based memory layer
+  // Only created when config.enableAssociativeMode === true
+  if (config.enableAssociativeMode) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_relations (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_entry_id  INTEGER NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+        target_entry_id  INTEGER NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+        relation_type    TEXT    NOT NULL DEFAULT 'related_to',
+        confidence       REAL    NOT NULL DEFAULT 1.0,
+        created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(source_entry_id, target_entry_id, relation_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_relations_source ON memory_relations(source_entry_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_target ON memory_relations(target_entry_id);
+    `);
+    db.exec(`INSERT OR IGNORE INTO memory_schema_version (version) VALUES (3)`);
   }
 }
 
@@ -873,6 +892,310 @@ export const tools = (sdk) => [
           success: false,
           error: error.message,
           hint: "Ensure entries is a valid array from memory_export output.",
+        };
+      }
+    },
+  },
+
+  // ── memory_relate ─────────────────────────────────────────────────────────
+  // Only functional when config.enableAssociativeMode === true
+  {
+    name: "memory_relate",
+    description:
+      "Create an explicit relationship between two memory entries. " +
+      "Requires enableAssociativeMode to be enabled in config. " +
+      "Use this to encode connections such as 'causes', 'depends_on', 'similar_to', 'related_to'. " +
+      "Relationships are undirected by default (source→target), but direction can be queried via memory_find_connections.",
+    category: "action",
+    parameters: {
+      type: "object",
+      properties: {
+        source_id: {
+          type: "integer",
+          description: "ID of the source memory entry.",
+        },
+        target_id: {
+          type: "integer",
+          description: "ID of the target memory entry.",
+        },
+        relation_type: {
+          type: "string",
+          description:
+            "Type of relationship (e.g. 'causes', 'depends_on', 'similar_to', 'related_to'). Defaults to 'related_to'.",
+        },
+        confidence: {
+          type: "number",
+          description: "Confidence score (0.0–1.0) for future ML weighting. Defaults to 1.0.",
+          minimum: 0,
+          maximum: 1,
+        },
+      },
+      required: ["source_id", "target_id"],
+    },
+    execute: async (params, _context) => {
+      try {
+        // Check associative mode
+        const modeCheck = sdk.db
+          .prepare(`SELECT version FROM memory_schema_version WHERE version = 3`)
+          .get();
+        if (!modeCheck) {
+          return {
+            success: false,
+            error: "Associative memory mode is not enabled",
+            hint: "Set enableAssociativeMode: true in the plugin config and restart.",
+          };
+        }
+
+        const sourceId = Number(params.source_id);
+        const targetId = Number(params.target_id);
+
+        if (!Number.isInteger(sourceId) || sourceId < 1) {
+          return {
+            success: false,
+            error: "source_id must be a positive integer",
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+        if (!Number.isInteger(targetId) || targetId < 1) {
+          return {
+            success: false,
+            error: "target_id must be a positive integer",
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+        if (sourceId === targetId) {
+          return {
+            success: false,
+            error: "source_id and target_id must be different entries",
+            hint: "A relation requires two distinct memory entries.",
+          };
+        }
+
+        // Verify both entries exist
+        const source = sdk.db
+          .prepare(`SELECT id FROM memory_entries WHERE id = ?`)
+          .get(sourceId);
+        if (!source) {
+          return {
+            success: false,
+            error: `Memory entry #${sourceId} not found`,
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+        const target = sdk.db
+          .prepare(`SELECT id FROM memory_entries WHERE id = ?`)
+          .get(targetId);
+        if (!target) {
+          return {
+            success: false,
+            error: `Memory entry #${targetId} not found`,
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+
+        const relationType = (params.relation_type ?? "related_to").trim() || "related_to";
+        const confidence = Math.max(0, Math.min(1, Number(params.confidence ?? 1.0)));
+
+        const result = sdk.db
+          .prepare(
+            `INSERT OR REPLACE INTO memory_relations
+               (source_entry_id, target_entry_id, relation_type, confidence)
+             VALUES (?, ?, ?, ?)`
+          )
+          .run(sourceId, targetId, relationType, confidence);
+
+        sdk.log.info(
+          `memory_relate: linked #${sourceId} -[${relationType}]-> #${targetId}`
+        );
+
+        return {
+          success: true,
+          data: {
+            id: Number(result.lastInsertRowid),
+            source_id: sourceId,
+            target_id: targetId,
+            relation_type: relationType,
+            confidence,
+            message: `Relation created: entry #${sourceId} -[${relationType}]-> entry #${targetId}`,
+          },
+        };
+      } catch (error) {
+        sdk.log.error(`memory_relate error: ${error.message}`);
+        return {
+          success: false,
+          error: error.message,
+          hint: "Ensure source_id and target_id are valid, distinct entry IDs.",
+        };
+      }
+    },
+  },
+
+  // ── memory_find_connections ────────────────────────────────────────────────
+  // Only functional when config.enableAssociativeMode === true
+  {
+    name: "memory_find_connections",
+    description:
+      "Find memory entries connected to a given entry via explicit relationships. " +
+      "Requires enableAssociativeMode to be enabled in config. " +
+      "Supports BFS traversal up to 3 hops, optional direction and relation_type filters. " +
+      "Useful for multi-hop reasoning: 'How is A connected to B?'",
+    category: "data-bearing",
+    parameters: {
+      type: "object",
+      properties: {
+        entry_id: {
+          type: "integer",
+          description: "Starting entry ID for graph traversal.",
+        },
+        relation_type: {
+          type: "string",
+          description: "Filter by relation type (e.g. 'causes', 'depends_on'). Omit to include all.",
+        },
+        direction: {
+          type: "string",
+          enum: ["outgoing", "incoming", "both"],
+          description:
+            "Traverse direction: 'outgoing' (entry is source), 'incoming' (entry is target), or 'both'. Defaults to 'both'.",
+        },
+        depth: {
+          type: "integer",
+          description: "Number of hops to traverse (1–3). Defaults to 1.",
+          minimum: 1,
+          maximum: 3,
+        },
+      },
+      required: ["entry_id"],
+    },
+    execute: async (params, _context) => {
+      try {
+        // Check associative mode
+        const modeCheck = sdk.db
+          .prepare(`SELECT version FROM memory_schema_version WHERE version = 3`)
+          .get();
+        if (!modeCheck) {
+          return {
+            success: false,
+            error: "Associative memory mode is not enabled",
+            hint: "Set enableAssociativeMode: true in the plugin config and restart.",
+          };
+        }
+
+        const startId = Number(params.entry_id);
+        if (!Number.isInteger(startId) || startId < 1) {
+          return {
+            success: false,
+            error: "entry_id must be a positive integer",
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+
+        const entry = sdk.db
+          .prepare(`SELECT id FROM memory_entries WHERE id = ?`)
+          .get(startId);
+        if (!entry) {
+          return {
+            success: false,
+            error: `Memory entry #${startId} not found`,
+            hint: "Use memory_list or memory_search to find valid entry IDs.",
+          };
+        }
+
+        const direction = params.direction ?? "both";
+        const maxDepth = Math.max(1, Math.min(3, Number(params.depth ?? 1)));
+        const filterRelType = params.relation_type ? String(params.relation_type).trim() : null;
+
+        // BFS traversal
+        const visited = new Set([startId]);
+        const paths = [];
+
+        // Queue entries: { id, depth, path }
+        const queue = [{ id: startId, depth: 0, path: [] }];
+
+        while (queue.length > 0) {
+          const { id: currentId, depth, path } = queue.shift();
+
+          if (depth >= maxDepth) continue;
+
+          // Build neighbour query based on direction
+          let neighbourRows = [];
+
+          if (direction === "outgoing" || direction === "both") {
+            const rows = sdk.db
+              .prepare(
+                `SELECT r.id AS rel_id, r.target_entry_id AS neighbour_id,
+                        r.relation_type, r.confidence, 'outgoing' AS dir
+                 FROM memory_relations r
+                 WHERE r.source_entry_id = ?
+                   ${filterRelType ? `AND r.relation_type = ?` : ""}
+                 ORDER BY r.confidence DESC`
+              )
+              .all(...[currentId, ...(filterRelType ? [filterRelType] : [])]);
+            neighbourRows = neighbourRows.concat(rows);
+          }
+
+          if (direction === "incoming" || direction === "both") {
+            const rows = sdk.db
+              .prepare(
+                `SELECT r.id AS rel_id, r.source_entry_id AS neighbour_id,
+                        r.relation_type, r.confidence, 'incoming' AS dir
+                 FROM memory_relations r
+                 WHERE r.target_entry_id = ?
+                   ${filterRelType ? `AND r.relation_type = ?` : ""}
+                 ORDER BY r.confidence DESC`
+              )
+              .all(...[currentId, ...(filterRelType ? [filterRelType] : [])]);
+            neighbourRows = neighbourRows.concat(rows);
+          }
+
+          for (const row of neighbourRows) {
+            const neighbourId = Number(row.neighbour_id);
+            if (visited.has(neighbourId)) continue;
+            visited.add(neighbourId);
+
+            const neighbourEntry = sdk.db
+              .prepare(
+                `SELECT id, content, created_at, updated_at, user_id FROM memory_entries WHERE id = ?`
+              )
+              .get(neighbourId);
+
+            if (!neighbourEntry) continue;
+
+            const { tags, entities } = loadTagsAndEntities(sdk, neighbourId);
+            const step = {
+              entry: formatEntry(neighbourEntry, tags, entities),
+              relation_type: row.relation_type,
+              direction: row.dir,
+              confidence: row.confidence,
+              depth: depth + 1,
+              path: [...path, currentId],
+            };
+            paths.push(step);
+
+            if (depth + 1 < maxDepth) {
+              queue.push({ id: neighbourId, depth: depth + 1, path: [...path, currentId] });
+            }
+          }
+        }
+
+        sdk.log.info(
+          `memory_find_connections: found ${paths.length} connections from #${startId} (depth ${maxDepth})`
+        );
+
+        return {
+          success: true,
+          data: {
+            start_id: startId,
+            connections: paths,
+            count: paths.length,
+            depth_searched: maxDepth,
+          },
+        };
+      } catch (error) {
+        sdk.log.error(`memory_find_connections error: ${error.message}`);
+        return {
+          success: false,
+          error: error.message,
+          hint: "Ensure entry_id is a valid ID and enableAssociativeMode is enabled.",
         };
       }
     },

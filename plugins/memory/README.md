@@ -178,6 +178,72 @@ memory_import({ entries: exportedData.entries })
 
 ---
 
+### `memory_relate`
+Create an explicit relationship between two memory entries. Requires `enableAssociativeMode: true` in config.
+
+**Parameters:**
+| Parameter       | Type    | Required | Description |
+|-----------------|---------|----------|-------------|
+| `source_id`     | integer | Yes      | ID of the source entry. |
+| `target_id`     | integer | Yes      | ID of the target entry. |
+| `relation_type` | string  | No       | Relationship label (e.g. `causes`, `depends_on`, `similar_to`). Defaults to `related_to`. |
+| `confidence`    | number  | No       | Confidence score 0.0–1.0 for future ML weighting. Defaults to `1.0`. |
+
+**Example:**
+```
+memory_relate({ source_id: 12, target_id: 34, relation_type: "causes" })
+```
+
+**Error examples:**
+```json
+{ "success": false, "error": "Associative memory mode is not enabled", "hint": "Set enableAssociativeMode: true in the plugin config and restart." }
+{ "success": false, "error": "Memory entry #99 not found", "hint": "Use memory_list or memory_search to find valid entry IDs." }
+{ "success": false, "error": "source_id and target_id must be different entries", "hint": "A relation requires two distinct memory entries." }
+```
+
+---
+
+### `memory_find_connections`
+Find memory entries connected to a given entry via explicit relationships. Supports BFS traversal up to 3 hops. Requires `enableAssociativeMode: true` in config.
+
+**Parameters:**
+| Parameter       | Type    | Required | Description |
+|-----------------|---------|----------|-------------|
+| `entry_id`      | integer | Yes      | Starting entry ID for traversal. |
+| `relation_type` | string  | No       | Filter by relation type. Omit to include all. |
+| `direction`     | string  | No       | `outgoing` (entry is source), `incoming` (entry is target), or `both` (default). |
+| `depth`         | integer | No       | Hops to traverse (1–3, default 1). Keep low for performance. |
+
+**Example:**
+```
+# Direct connections from entry 12
+memory_find_connections({ entry_id: 12, depth: 1 })
+
+# Multi-hop traversal: "How is entry 5 connected to anything?"
+memory_find_connections({ entry_id: 5, depth: 2, direction: "both" })
+
+# Only entries that depend on entry 7
+memory_find_connections({ entry_id: 7, direction: "incoming", relation_type: "depends_on" })
+```
+
+**Usage pattern (multi-hop reasoning):**
+```
+User: "How is TONBANKCARD connected to my DeFi strategy?"
+
+1. memory_search({ query: "TONBANKCARD", entity: "DeFi" }) → finds direct entries
+2. For each result, memory_find_connections({ entry_id, depth: 2 }) → expands via relations
+3. Synthesize answer using both direct facts and inferred connections
+```
+
+**Error examples:**
+```json
+{ "success": false, "error": "Associative memory mode is not enabled", "hint": "Set enableAssociativeMode: true in the plugin config and restart." }
+{ "success": false, "error": "Memory entry #99 not found", "hint": "Use memory_list or memory_search to find valid entry IDs." }
+{ "success": false, "error": "entry_id must be a positive integer", "hint": "Use memory_list or memory_search to find valid entry IDs." }
+```
+
+---
+
 ## Entity Extraction
 
 Entities are automatically detected from entry content:
@@ -223,6 +289,16 @@ This plugin uses an isolated SQLite database (`sdk.db`) with the following schem
 | `version`    | INTEGER | Schema version number |
 | `applied_at` | INTEGER | Unix timestamp when version was applied |
 
+### `memory_relations` _(optional, requires `enableAssociativeMode: true`)_
+| Column            | Type    | Description |
+|-------------------|---------|-------------|
+| `id`              | INTEGER | Primary key, auto-incremented |
+| `source_entry_id` | INTEGER | Foreign key → `memory_entries.id` (cascade delete) |
+| `target_entry_id` | INTEGER | Foreign key → `memory_entries.id` (cascade delete) |
+| `relation_type`   | TEXT    | Label for the relationship (e.g. `causes`, `depends_on`, `related_to`) |
+| `confidence`      | REAL    | Confidence score 0.0–1.0 (reserved for future ML weighting) |
+| `created_at`      | INTEGER | Unix timestamp of creation |
+
 ### Indexes
 - `idx_memory_created_at` — fast date-range queries on entries
 - `idx_memory_updated_at` — fast sort by last modified
@@ -230,6 +306,8 @@ This plugin uses an isolated SQLite database (`sdk.db`) with the following schem
 - `idx_memory_tags_entry` — fast tag fetch per entry
 - `idx_memory_entities` — fast entity name lookups
 - `idx_memory_entities_entry` — fast entity fetch per entry
+- `idx_relations_source` — fast outgoing relation lookups _(when associative mode enabled)_
+- `idx_relations_target` — fast incoming relation lookups _(when associative mode enabled)_
 
 ---
 
@@ -254,6 +332,8 @@ All tools return a consistent response envelope:
 | `Invalid start_date: "…"` | Date string is not ISO 8601 (`YYYY-MM-DD`) | Use format `"2026-03-01"` |
 | `Invalid end_date: "…"` | Date string is not ISO 8601 (`YYYY-MM-DD`) | Use format `"2026-03-31"` |
 | `entries must be a non-empty array` | Empty or missing array passed to `memory_import` | Use `memory_export` first, then pass its `entries` array |
+| `Associative memory mode is not enabled` | `memory_relate` or `memory_find_connections` called without opt-in | Set `enableAssociativeMode: true` in config and restart |
+| `source_id and target_id must be different entries` | Both IDs are the same | Provide two distinct entry IDs |
 
 ### Example error responses
 
@@ -272,6 +352,45 @@ All tools return a consistent response envelope:
 
 // Import with empty array
 { "success": false, "error": "entries must be a non-empty array", "hint": "Use memory_export to get a valid export blob, then pass its entries array here." }
+```
+
+---
+
+## Associative Memory (Optional)
+
+The associative memory layer enables graph-based reasoning by encoding explicit relationships between entries. It is **disabled by default** (zero impact on existing setups) and must be explicitly opted in.
+
+### Enabling
+
+Set `enableAssociativeMode: true` in the plugin config. On the next load, the `memory_relations` table and its indexes are created automatically.
+
+### Relation types
+
+Any string is valid. Common conventions:
+
+| Relation type | Meaning |
+|---------------|---------|
+| `related_to`  | Generic connection (default) |
+| `causes`      | Entry A is a cause of entry B |
+| `depends_on`  | Entry A depends on entry B |
+| `similar_to`  | Entries are semantically similar |
+| `contradicts` | Entries conflict with each other |
+
+### Graph traversal example
+
+```
+# Store some entries
+memory_store({ content: "TONBANKCARD launched #defi #product" })       → id 1
+memory_store({ content: "DeFi strategy requires low-fee chain #defi" }) → id 2
+memory_store({ content: "TON chain offers low fees #ton #defi" })       → id 3
+
+# Create relations
+memory_relate({ source_id: 1, target_id: 2, relation_type: "related_to" })
+memory_relate({ source_id: 2, target_id: 3, relation_type: "depends_on" })
+
+# Multi-hop traversal: 2 hops from entry 1
+memory_find_connections({ entry_id: 1, depth: 2 })
+# → finds entry 2 (hop 1) and entry 3 (hop 2 via entry 2)
 ```
 
 ---

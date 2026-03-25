@@ -21,14 +21,21 @@ const PLUGIN_URL = pathToFileURL(join(PLUGIN_DIR, "index.js")).href;
  * Build an in-memory mock DB that supports exec, prepare().run(), .get(), .all()
  * and tracks inserted rows by table name.
  */
-function makeMockDb(overrides = {}) {
+function makeMockDb(overrides = {}, opts = {}) {
   const store = {
     memory_entries: [],
     memory_tags: [],
     memory_entities: [],
     memory_schema_version: [],
+    memory_relations: [],
     nextId: 1,
+    nextRelId: 1,
   };
+
+  // Seed schema version 3 when associative mode is enabled
+  if (opts.enableAssociativeMode) {
+    store.memory_schema_version.push({ version: 3 });
+  }
 
   return {
     _store: store,
@@ -63,6 +70,27 @@ function makeMockDb(overrides = {}) {
             });
             return {};
           }
+          if ((s.startsWith("INSERT") || s.startsWith("INSERT OR REPLACE")) && s.includes("MEMORY_RELATIONS")) {
+            // Remove existing relation with same (source, target, type) if replacing
+            store.memory_relations = store.memory_relations.filter(
+              (r) =>
+                !(
+                  r.source_entry_id === args[0] &&
+                  r.target_entry_id === args[1] &&
+                  r.relation_type === args[2]
+                )
+            );
+            const relId = store.nextRelId++;
+            store.memory_relations.push({
+              id: relId,
+              source_entry_id: args[0],
+              target_entry_id: args[1],
+              relation_type: args[2],
+              confidence: args[3] ?? 1.0,
+              created_at: Math.floor(Date.now() / 1000),
+            });
+            return { lastInsertRowid: relId };
+          }
           if (s.startsWith("DELETE FROM MEMORY_ENTRIES")) {
             store.memory_entries = store.memory_entries.filter((e) => e.id !== args[0]);
             return {};
@@ -90,6 +118,12 @@ function makeMockDb(overrides = {}) {
           if (s.includes("COUNT(*)")) {
             return { n: store.memory_entries.length };
           }
+          if (s.includes("FROM MEMORY_SCHEMA_VERSION") && s.includes("WHERE VERSION")) {
+            // Version number may be embedded in SQL (e.g. WHERE version = 3) or passed as arg
+            const versionInSql = s.match(/WHERE VERSION\s*=\s*(\d+)/);
+            const versionNum = versionInSql ? Number(versionInSql[1]) : args[0];
+            return store.memory_schema_version.find((v) => v.version === versionNum) ?? null;
+          }
           if (s.includes("FROM MEMORY_ENTRIES") && s.includes("WHERE ID")) {
             return store.memory_entries.find((e) => e.id === args[0]) ?? null;
           }
@@ -108,6 +142,34 @@ function makeMockDb(overrides = {}) {
           }
           if (s.includes("FROM MEMORY_ENTITIES") && s.includes("WHERE ENTRY_ID")) {
             return store.memory_entities.filter((e) => e.entry_id === args[0]);
+          }
+          if (s.includes("FROM MEMORY_RELATIONS") && s.includes("WHERE R.SOURCE_ENTRY_ID")) {
+            // Outgoing: WHERE r.source_entry_id = ?
+            let rows = store.memory_relations.filter((r) => r.source_entry_id === args[0]);
+            if (args[1] !== undefined) {
+              rows = rows.filter((r) => r.relation_type === args[1]);
+            }
+            return rows.map((r) => ({
+              rel_id: r.id,
+              neighbour_id: r.target_entry_id,
+              relation_type: r.relation_type,
+              confidence: r.confidence,
+              dir: "outgoing",
+            }));
+          }
+          if (s.includes("FROM MEMORY_RELATIONS") && s.includes("WHERE R.TARGET_ENTRY_ID")) {
+            // Incoming: WHERE r.target_entry_id = ?
+            let rows = store.memory_relations.filter((r) => r.target_entry_id === args[0]);
+            if (args[1] !== undefined) {
+              rows = rows.filter((r) => r.relation_type === args[1]);
+            }
+            return rows.map((r) => ({
+              rel_id: r.id,
+              neighbour_id: r.source_entry_id,
+              relation_type: r.relation_type,
+              confidence: r.confidence,
+              dir: "incoming",
+            }));
           }
           if (s.includes("FROM MEMORY_ENTRIES")) {
             let results = [...store.memory_entries];
@@ -140,6 +202,18 @@ function makeMockDb(overrides = {}) {
     },
 
     ...overrides,
+  };
+}
+
+function makeSdkWithAssociativeMode() {
+  return {
+    log: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    },
+    db: makeMockDb({}, { enableAssociativeMode: true }),
   };
 }
 
@@ -228,9 +302,9 @@ describe("memory plugin", () => {
       assert.ok(Array.isArray(toolList));
     });
 
-    it("exports exactly 8 tools", () => {
+    it("exports exactly 10 tools", () => {
       const toolList = mod.tools(makeSdk());
-      assert.equal(toolList.length, 8);
+      assert.equal(toolList.length, 10);
     });
 
     it("all tools have name, description, and execute", () => {
@@ -254,6 +328,8 @@ describe("memory plugin", () => {
         "memory_list_tags",
         "memory_export",
         "memory_import",
+        "memory_relate",
+        "memory_find_connections",
       ];
       for (const name of expected) {
         assert.ok(names.includes(name), `missing tool: ${name}`);
@@ -662,6 +738,235 @@ describe("memory plugin", () => {
       const listResult = await list.execute({}, makeContext());
       assert.equal(listResult.success, true);
       assert.equal(listResult.data.total, 2);
+    });
+  });
+
+  // ── memory_relate ────────────────────────────────────────────────────────────
+  describe("memory_relate", () => {
+    it("returns error when associative mode is not enabled", async () => {
+      const sdk = makeSdk(); // no associative mode
+      const tool = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await tool.execute({ source_id: 1, target_id: 2 }, makeContext());
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("not enabled"));
+      assert.ok(result.hint.includes("enableAssociativeMode"));
+    });
+
+    it("creates a relation between two existing entries", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r1 = await store.execute({ content: "Entry A" }, makeContext());
+      const r2 = await store.execute({ content: "Entry B" }, makeContext());
+      const idA = r1.data.id;
+      const idB = r2.data.id;
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: idA, target_id: idB, relation_type: "causes" },
+        makeContext()
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.data.source_id, idA);
+      assert.equal(result.data.target_id, idB);
+      assert.equal(result.data.relation_type, "causes");
+      assert.ok(result.data.message.includes("causes"));
+    });
+
+    it("defaults relation_type to related_to", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r1 = await store.execute({ content: "Entry X" }, makeContext());
+      const r2 = await store.execute({ content: "Entry Y" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: r1.data.id, target_id: r2.data.id },
+        makeContext()
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.data.relation_type, "related_to");
+    });
+
+    it("returns error when source_id is invalid", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: 0, target_id: 1 },
+        makeContext()
+      );
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("source_id"));
+    });
+
+    it("returns error when source_id and target_id are the same", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r = await store.execute({ content: "Self-loop entry" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: r.data.id, target_id: r.data.id },
+        makeContext()
+      );
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("different"));
+    });
+
+    it("returns error when source entry does not exist", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r = await store.execute({ content: "Existing entry" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: 9999, target_id: r.data.id },
+        makeContext()
+      );
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("not found"));
+    });
+
+    it("returns error when target entry does not exist", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r = await store.execute({ content: "Existing entry" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: r.data.id, target_id: 9999 },
+        makeContext()
+      );
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("not found"));
+    });
+
+    it("clamps confidence to [0, 1]", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r1 = await store.execute({ content: "C1" }, makeContext());
+      const r2 = await store.execute({ content: "C2" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      const result = await relate.execute(
+        { source_id: r1.data.id, target_id: r2.data.id, confidence: 1.5 },
+        makeContext()
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.data.confidence, 1.0);
+    });
+  });
+
+  // ── memory_find_connections ───────────────────────────────────────────────────
+  describe("memory_find_connections", () => {
+    it("returns error when associative mode is not enabled", async () => {
+      const sdk = makeSdk();
+      const tool = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await tool.execute({ entry_id: 1 }, makeContext());
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("not enabled"));
+    });
+
+    it("returns error when entry does not exist", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const tool = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await tool.execute({ entry_id: 9999 }, makeContext());
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("not found"));
+    });
+
+    it("returns empty connections for isolated entry", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r = await store.execute({ content: "Isolated entry" }, makeContext());
+
+      const tool = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await tool.execute({ entry_id: r.data.id }, makeContext());
+      assert.equal(result.success, true);
+      assert.equal(result.data.count, 0);
+      assert.deepEqual(result.data.connections, []);
+    });
+
+    it("finds direct outgoing connections (depth 1)", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const rA = await store.execute({ content: "Node A" }, makeContext());
+      const rB = await store.execute({ content: "Node B" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      await relate.execute(
+        { source_id: rA.data.id, target_id: rB.data.id, relation_type: "causes" },
+        makeContext()
+      );
+
+      const find = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await find.execute(
+        { entry_id: rA.data.id, direction: "outgoing", depth: 1 },
+        makeContext()
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.data.count, 1);
+      assert.equal(result.data.connections[0].entry.id, rB.data.id);
+      assert.equal(result.data.connections[0].relation_type, "causes");
+      assert.equal(result.data.connections[0].direction, "outgoing");
+    });
+
+    it("finds direct incoming connections (depth 1)", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const rA = await store.execute({ content: "Source node" }, makeContext());
+      const rB = await store.execute({ content: "Target node" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      await relate.execute(
+        { source_id: rA.data.id, target_id: rB.data.id, relation_type: "depends_on" },
+        makeContext()
+      );
+
+      const find = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await find.execute(
+        { entry_id: rB.data.id, direction: "incoming", depth: 1 },
+        makeContext()
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.data.count, 1);
+      assert.equal(result.data.connections[0].entry.id, rA.data.id);
+      assert.equal(result.data.connections[0].direction, "incoming");
+    });
+
+    it("finds connections in both directions by default", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const rA = await store.execute({ content: "Center node" }, makeContext());
+      const rB = await store.execute({ content: "Outgoing target" }, makeContext());
+      const rC = await store.execute({ content: "Incoming source" }, makeContext());
+
+      const relate = mod.tools(sdk).find((t) => t.name === "memory_relate");
+      await relate.execute({ source_id: rA.data.id, target_id: rB.data.id }, makeContext());
+      await relate.execute({ source_id: rC.data.id, target_id: rA.data.id }, makeContext());
+
+      const find = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await find.execute({ entry_id: rA.data.id }, makeContext());
+      assert.equal(result.success, true);
+      assert.equal(result.data.count, 2);
+    });
+
+    it("returns error for invalid entry_id", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const tool = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await tool.execute({ entry_id: -1 }, makeContext());
+      assert.equal(result.success, false);
+      assert.ok(result.error.includes("entry_id"));
+    });
+
+    it("clamps depth to maximum of 3", async () => {
+      const sdk = makeSdkWithAssociativeMode();
+      const store = mod.tools(sdk).find((t) => t.name === "memory_store");
+      const r = await store.execute({ content: "Depth test entry" }, makeContext());
+
+      const find = mod.tools(sdk).find((t) => t.name === "memory_find_connections");
+      const result = await find.execute({ entry_id: r.data.id, depth: 10 }, makeContext());
+      assert.equal(result.success, true);
+      assert.equal(result.data.depth_searched, 3);
     });
   });
 });
