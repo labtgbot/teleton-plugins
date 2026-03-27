@@ -28,6 +28,7 @@
  * Risk management tools (P2):
  *   - ton_trading_calculate_risk_metrics      — VaR, max drawdown, Sharpe ratio
  *   - ton_trading_set_stop_loss               — register a stop-loss rule in the journal
+ *   - ton_trading_check_stop_loss             — query active rules and detect triggered stop-loss / take-profit
  *   - ton_trading_get_optimal_position_size   — Kelly / fixed-fraction sizing
  *
  * Automation tools (P2):
@@ -1732,7 +1733,93 @@ export const tools = (sdk) => [
     },
   },
 
-  // ── Tool 19: ton_trading_get_optimal_position_size ─────────────────────────
+  // ── Tool 19: ton_trading_check_stop_loss ───────────────────────────────────
+  {
+    name: "ton_trading_check_stop_loss",
+    description:
+      "Query active stop-loss and take-profit rules for open trades and check whether the current market price has triggered any of them. Returns triggered rules with a recommended action. Call this after every ton_trading_get_market_data to enforce risk limits.",
+    category: "data-bearing",
+    parameters: {
+      type: "object",
+      properties: {
+        current_price: {
+          type: "number",
+          description: "Current market price of the asset (in quote asset units)",
+        },
+        trade_id: {
+          type: "integer",
+          description: "Optional: check rules only for this specific trade ID. If omitted, all active rules are checked.",
+        },
+      },
+      required: ["current_price"],
+    },
+    execute: async (params, _context) => {
+      const { current_price, trade_id } = params;
+      try {
+        const query = trade_id != null
+          ? "SELECT * FROM stop_loss_rules WHERE status = 'active' AND trade_id = ?"
+          : "SELECT * FROM stop_loss_rules WHERE status = 'active'";
+        const args = trade_id != null ? [trade_id] : [];
+
+        const activeRules = sdk.db.prepare(query).all(...args);
+
+        const triggered = [];
+        const safe = [];
+
+        for (const rule of activeRules) {
+          const stopLossPrice = rule.entry_price * (1 - rule.stop_loss_percent / 100);
+          const takeProfitPrice = rule.take_profit_percent != null
+            ? rule.entry_price * (1 + rule.take_profit_percent / 100)
+            : null;
+
+          const stopLossHit = current_price <= stopLossPrice;
+          const takeProfitHit = takeProfitPrice != null && current_price >= takeProfitPrice;
+
+          const annotated = {
+            rule_id: rule.id,
+            trade_id: rule.trade_id,
+            entry_price: rule.entry_price,
+            current_price,
+            stop_loss_price: parseFloat(stopLossPrice.toFixed(6)),
+            take_profit_price: takeProfitPrice != null ? parseFloat(takeProfitPrice.toFixed(6)) : null,
+            stop_loss_percent: rule.stop_loss_percent,
+            take_profit_percent: rule.take_profit_percent ?? null,
+            stop_loss_hit: stopLossHit,
+            take_profit_hit: takeProfitHit,
+          };
+
+          if (stopLossHit || takeProfitHit) {
+            annotated.action = stopLossHit ? "stop_loss" : "take_profit";
+            triggered.push(annotated);
+          } else {
+            safe.push(annotated);
+          }
+        }
+
+        if (triggered.length > 0) {
+          sdk.log.info(`ton_trading_check_stop_loss: ${triggered.length} rule(s) triggered at price ${current_price}`);
+        }
+
+        return {
+          success: true,
+          data: {
+            current_price,
+            active_rules: activeRules.length,
+            triggered_rules: triggered,
+            safe_rules: safe,
+            note: triggered.length > 0
+              ? `${triggered.length} rule(s) triggered — close affected trades using ton_trading_record_trade, then update rule status to 'triggered'`
+              : "No rules triggered — all positions within limits",
+          },
+        };
+      } catch (err) {
+        sdk.log.error(`ton_trading_check_stop_loss failed: ${err.message}`);
+        return { success: false, error: String(err.message).slice(0, 500) };
+      }
+    },
+  },
+
+  // ── Tool 21: ton_trading_get_optimal_position_size ─────────────────────────
   {
     name: "ton_trading_get_optimal_position_size",
     description:
@@ -1836,7 +1923,7 @@ export const tools = (sdk) => [
 
   // ── P2 Tools: Automation ───────────────────────────────────────────────────
 
-  // ── Tool 20: ton_trading_schedule_trade ────────────────────────────────────
+  // ── Tool 22: ton_trading_schedule_trade ────────────────────────────────────
   {
     name: "ton_trading_schedule_trade",
     description:
@@ -1913,7 +2000,7 @@ export const tools = (sdk) => [
     },
   },
 
-  // ── Tool 21: ton_trading_get_scheduled_trades ──────────────────────────────
+  // ── Tool 23: ton_trading_get_scheduled_trades ──────────────────────────────
   {
     name: "ton_trading_get_scheduled_trades",
     description:
