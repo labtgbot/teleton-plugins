@@ -85,6 +85,10 @@
       "description": "Register a stop-loss and optional take-profit rule for an open trade"
     },
     {
+      "name": "ton_trading_check_stop_loss",
+      "description": "Query active stop-loss and take-profit rules and detect which ones are triggered by the current market price"
+    },
+    {
       "name": "ton_trading_get_optimal_position_size",
       "description": "Calculate optimal position size using Kelly Criterion and fixed-fraction methods"
     },

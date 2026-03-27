@@ -148,10 +148,10 @@ describe("ton-trading-bot plugin", () => {
       assert.ok(Array.isArray(toolList));
     });
 
-    it("exports exactly 21 tools", () => {
+    it("exports exactly 22 tools", () => {
       const sdk = makeSdk();
       const toolList = mod.tools(sdk);
-      assert.equal(toolList.length, 21);
+      assert.equal(toolList.length, 22);
     });
 
     it("all tools have name, description, and execute", () => {
@@ -946,6 +946,106 @@ describe("ton-trading-bot plugin", () => {
       const result = await tool.execute({ trade_id: 2, entry_price: 100, stop_loss_percent: 5 }, {});
       assert.equal(result.success, false);
       assert.ok(result.error.includes("already closed"));
+    });
+  });
+
+  // ── ton_trading_check_stop_loss ────────────────────────────────────────────
+  describe("ton_trading_check_stop_loss", () => {
+    it("required parameters include current_price", () => {
+      const sdk = makeSdk();
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      assert.ok(tool.parameters?.required?.includes("current_price"));
+    });
+
+    it("has data-bearing category", () => {
+      const sdk = makeSdk();
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      assert.equal(tool.category, "data-bearing");
+    });
+
+    it("returns no triggered rules when price is within limits", async () => {
+      const activeRule = { id: 1, trade_id: 1, entry_price: 100, stop_loss_percent: 10, take_profit_percent: 20, status: "active" };
+      const sdk = makeSdk({
+        db: {
+          exec: () => {},
+          prepare: () => ({ get: () => null, all: () => [activeRule], run: () => ({ lastInsertRowid: 1 }) }),
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      const result = await tool.execute({ current_price: 100 }, {});
+      assert.equal(result.success, true);
+      assert.equal(result.data.triggered_rules.length, 0);
+      assert.equal(result.data.safe_rules.length, 1);
+      assert.ok(result.data.note.includes("No rules triggered"));
+    });
+
+    it("detects stop-loss trigger when price falls below threshold", async () => {
+      const activeRule = { id: 2, trade_id: 3, entry_price: 100, stop_loss_percent: 10, take_profit_percent: null, status: "active" };
+      const sdk = makeSdk({
+        db: {
+          exec: () => {},
+          prepare: () => ({ get: () => null, all: () => [activeRule], run: () => ({ lastInsertRowid: 1 }) }),
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      const result = await tool.execute({ current_price: 89 }, {}); // below 90 (stop-loss price)
+      assert.equal(result.success, true);
+      assert.equal(result.data.triggered_rules.length, 1);
+      assert.equal(result.data.triggered_rules[0].action, "stop_loss");
+      assert.equal(result.data.triggered_rules[0].stop_loss_hit, true);
+      assert.ok(result.data.note.includes("triggered"));
+    });
+
+    it("detects take-profit trigger when price rises above threshold", async () => {
+      const activeRule = { id: 3, trade_id: 4, entry_price: 100, stop_loss_percent: 10, take_profit_percent: 20, status: "active" };
+      const sdk = makeSdk({
+        db: {
+          exec: () => {},
+          prepare: () => ({ get: () => null, all: () => [activeRule], run: () => ({ lastInsertRowid: 1 }) }),
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      const result = await tool.execute({ current_price: 121 }, {}); // above 120 (take-profit price)
+      assert.equal(result.success, true);
+      assert.equal(result.data.triggered_rules.length, 1);
+      assert.equal(result.data.triggered_rules[0].action, "take_profit");
+      assert.equal(result.data.triggered_rules[0].take_profit_hit, true);
+    });
+
+    it("filters rules by trade_id when provided", async () => {
+      const rule1 = { id: 1, trade_id: 1, entry_price: 100, stop_loss_percent: 10, take_profit_percent: null, status: "active" };
+      const sdk = makeSdk({
+        db: {
+          exec: () => {},
+          prepare: (sql) => ({
+            get: () => null,
+            all: (...args) => {
+              // Only return rule if the trade_id matches what was queried
+              return args[0] === 1 ? [rule1] : [];
+            },
+            run: () => ({ lastInsertRowid: 1 }),
+          }),
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      const result = await tool.execute({ current_price: 100, trade_id: 1 }, {});
+      assert.equal(result.success, true);
+      assert.equal(result.data.active_rules, 1);
+    });
+
+    it("returns empty results when no active rules exist", async () => {
+      const sdk = makeSdk({
+        db: {
+          exec: () => {},
+          prepare: () => ({ get: () => null, all: () => [], run: () => ({ lastInsertRowid: 1 }) }),
+        },
+      });
+      const tool = mod.tools(sdk).find((t) => t.name === "ton_trading_check_stop_loss");
+      const result = await tool.execute({ current_price: 50 }, {});
+      assert.equal(result.success, true);
+      assert.equal(result.data.active_rules, 0);
+      assert.equal(result.data.triggered_rules.length, 0);
+      assert.equal(result.data.safe_rules.length, 0);
     });
   });
 
