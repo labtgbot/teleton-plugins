@@ -125,7 +125,6 @@ async function fetchWithRetry({ url, method, headers, body, timeoutMs, log }) {
       clearTimeout(timer);
 
       const isTimeout = err.name === "AbortError";
-      const isNetwork = !isTimeout;
 
       if (isTimeout) {
         lastError = new Error(`Request timed out after ${timeoutMs}ms`);
