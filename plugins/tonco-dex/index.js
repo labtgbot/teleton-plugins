@@ -46,6 +46,12 @@ let _sdk = null;
 // GraphQL helper
 // ---------------------------------------------------------------------------
 
+/**
+ * Execute a GraphQL query against the TONCO indexer.
+ * @param {string} query - GraphQL query string
+ * @param {object} [variables] - Query variables
+ * @returns {Promise<any>} Parsed response data
+ */
 async function gqlQuery(query, variables = {}) {
   const res = await fetch(INDEXER_URL, {
     method: "POST",
@@ -70,6 +76,11 @@ async function gqlQuery(query, variables = {}) {
 
 let _tonClient = null;
 
+/**
+ * Get or create a TonClient instance.
+ * Uses @orbs-network/ton-access for decentralized endpoints when available.
+ * @returns {Promise<TonClient>}
+ */
 async function getTonClient() {
   if (_tonClient) return _tonClient;
   let endpoint;
@@ -87,6 +98,12 @@ async function getTonClient() {
 // Format helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Format a raw token amount (bigint string) to human-readable decimal.
+ * @param {string|bigint|number} raw - Raw amount in smallest units
+ * @param {number} decimals - Token decimals
+ * @returns {string} Human-readable amount
+ */
 function formatAmount(raw, decimals = 9) {
   if (!raw && raw !== 0n) return "0";
   const s = String(raw);
@@ -97,6 +114,11 @@ function formatAmount(raw, decimals = 9) {
   return fracPart ? `${intPart}.${fracPart}` : intPart;
 }
 
+/**
+ * Format a USD value string for display.
+ * @param {string|number|null} val
+ * @returns {string}
+ */
 function formatUsd(val) {
   if (!val) return "0";
   const n = parseFloat(val);
@@ -106,18 +128,10 @@ function formatUsd(val) {
   return `$${n.toFixed(2)}`;
 }
 
-function parseAmount(amount, decimals = 9) {
-  const str = String(amount);
-  const [intPart, fracPart = ""] = str.split(".");
-  const fracPadded = fracPart.padEnd(decimals, "0").slice(0, decimals);
-  return BigInt(intPart + fracPadded);
-}
-
-// ---------------------------------------------------------------------------
-// Tool 1: tonco_list_pools
-// ---------------------------------------------------------------------------
-
-const toncoListPools = {
-  name: "tonco_list_pools",
-  description:
-    "Discover and list TONCO liquidity pools. Optionally filter
+/**
+ * Parse a human-readable amount to raw bigint units.
+ * @param {string|number} amount - Human-readable amount (e.g. "10.5")
+ * @param {number} decimals - Token decimals
+ * @returns {bigint}
+ */
+function parseAmount(amount, decimals
